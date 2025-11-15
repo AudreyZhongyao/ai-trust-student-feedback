@@ -1,0 +1,217 @@
+
+```{r}
+library(tidyverse)
+
+# Define Likert scale terms in order (from image.png)
+terms_order <- c("Precise", "Fair", "Factual", "Relevant", 
+                 "Informative", "Applicable", "Sincere", "Authentic")
+
+# Read data and convert to long format
+df_long <- read.csv("results_processed_coded_numeric.csv") %>%
+  # Convert comma-separated strings to list columns
+  mutate(across(c(P1_likert_humanplusai, P1_likert_AI, P1_likert_human, 
+                  P3_likert_humanplusai, P3_likert_AI, P3_likert_human,), 
+                ~str_split(., ","))) %>%
+  # Unnest and create term labels
+  pivot_longer(
+    cols = c(P1_likert_humanplusai, P3_likert_humanplusai),
+    names_to = "feedback_type",
+    values_to = "scores"
+  ) %>%
+  unnest(scores) %>%
+  group_by(course_id, student_id, feedback_type) %>%
+  mutate(
+    term = terms_order[row_number()],
+    score = as.integer(scores)
+  ) %>%
+  ungroup() %>%
+  select(-scores) %>%
+  pivot_wider(
+    names_from = feedback_type,
+    values_from = score
+  )
+
+# Show resulting structure
+glimpse(df_long)
+```
+
+```{r}
+library(tidyverse)
+
+# Define Likert scale terms and their corresponding dimensions
+terms_order <- c("Precise", "Fair", "Factual", "Relevant", 
+                 "Informative", "Applicable", "Sincere", "Authentic")
+
+# Read and process data
+final_df <- read.csv("results_processed_coded_numeric.csv") %>%
+  # Convert comma-separated strings to list columns
+  mutate(across(c(P1_likert_humanplusai, P1_likert_AI, P1_likert_human,
+                  P3_likert_humanplusai, P3_likert_AI, P3_likert_human), 
+                ~str_split(., ","))) %>%
+  # Reshape to long format
+  pivot_longer(
+    cols = c(P1_likert_humanplusai, P1_likert_AI, P1_likert_human,
+             P3_likert_humanplusai, P3_likert_AI, P3_likert_human),
+    names_to = "feedback_type",
+    values_to = "scores"
+  ) %>%
+  unnest(scores) %>%
+  # Create term labels and numerical scores
+  group_by(course_id, student_id, feedback_type) %>%
+  mutate(
+    term = terms_order[row_number()],
+    score = as.integer(scores)
+  ) %>%
+  ungroup() %>%
+  select(-scores) %>%
+  # Split feedback type into components
+  separate(feedback_type, into = c("time_point", "feedback_source"), sep = "_likert_") %>%
+  # Assign terms to dimensions
+  mutate(
+    dimension = case_when(
+      term %in% c("Precise", "Fair", "Factual") ~ "Objectivity",
+      term %in% c("Relevant", "Informative", "Applicable") ~ "Usefulness",
+      term %in% c("Sincere", "Authentic") ~ "Genuineness"
+    )
+  ) %>%
+  # Calculate dimension means
+  group_by(course_id, student_id, time_point, feedback_source, dimension) %>%
+  summarize(dimension_mean = mean(score, na.rm = TRUE), .groups = "drop") %>%
+  # Create 18 new columns
+  pivot_wider(
+    names_from = c(dimension, feedback_source, time_point),
+    values_from = dimension_mean,
+    names_sep = "_"
+  ) %>%
+  # Join back with original data
+  right_join(read.csv("results_processed_coded_numeric.csv"),
+             by = c("course_id", "student_id"))
+
+# View final structure
+glimpse(final_df)
+
+write.csv(final_df, "final_df.csv", row.names = FALSE)
+```
+
+```{r}
+library(lme4)
+library(broom.mixed)
+
+final_df_processed <- read.csv("final_df_processed.csv")
+
+# 2. Reshape Data for MLM 
+mlm_df <- final_df_processed %>%
+  # Convert to long format for dimensions
+  pivot_longer(
+    cols = matches("Objectivity_|Usefulness_|Genuineness_"),
+    names_to = "dimension_source_time",
+    values_to = "dimension_score"
+  ) %>%
+  separate(dimension_source_time, 
+           into = c("dimension", "feedback_source", "time_point"),
+           sep = "_") %>%
+  # Recode time points
+  mutate(
+    time_point = recode(time_point, "P1" = "Blind", "P3" = "Informed"),
+    feedback_source = recode(feedback_source,
+                            "humanplusai" = "coproduced",
+                            "human" = "Human",
+                            "AI" = "AI") %>% 
+      factor(levels = c("Human", "AI", "coproduced"))
+  )
+
+# 3. Define Model Formula 
+mixed_model_formula <- formula(
+  dimension_score ~ 
+    feedback_source * time_point * TT_result +
+    course_id + P4_student_age + P4_student_gender +
+    (1 | student_id)
+)
+
+# 4. Run Models for Each Dimension
+dimension_results <- mlm_df %>%
+  group_by(dimension) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~lmer(mixed_model_formula, data = .x)),
+    tidied = map(model, ~tidy(.x, effects = "fixed")),
+    glanced = map(model, ~glance(.x))
+  )
+
+# 5. Extract and View Results 
+# Save fixed effects results
+dimension_results %>%
+  select(dimension, tidied) %>%
+  unnest(tidied) %>%
+  write.csv("dimension_fixed_effects.csv", row.names = FALSE)
+
+# Save model fit statistics
+dimension_results %>%
+  select(dimension, glanced) %>%
+  unnest(glanced) %>%
+  write.csv("dimension_fit_statistics.csv", row.names = FALSE)
+
+# Next step: Post-hoc Comparisons ------------------------------------------------------
+# Example for Objectivity
+objectivity_model <- dimension_results %>% 
+  filter(dimension == "Objectivity") %>% 
+  pull(model) %>% 
+  pluck(1)
+
+emmeans::emmeans(objectivity_model, pairwise ~ feedback_source*TT_result)
+```
+
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+
+# Read and process the data
+plot_data <- final_df_processed %>%
+  # Gather the dimension scores into long format
+  pivot_longer(
+    cols = matches("^(Objectivity|Usefulness|Genuineness)_"),
+    names_to = c("dimension", "feedback_source", "time_point"),
+    names_sep = "_",
+    values_to = "score"
+  ) %>%
+  # Clean up the time points
+  mutate(
+    time_point = recode(time_point, 
+                       "P1" = "Blind Rating",
+                       "P3" = "Informed Rating"),
+    feedback_source = recode(feedback_source,
+                           "humanplusai" = "Co-produced",
+                           "human" = "Human",
+                           "AI" = "AI"),
+    # Convert TT_result to factor with nice labels
+    TT_result = factor(TT_result,
+                      levels = c("Both Failed", "AI Passed Only",
+                               "Co-produced Passed Only", "Both Passed"),
+                      labels = c("TT: Both Failed", "TT: AI Passed Only",
+                               "TT: Co-produced Passed", "TT: Both Passed"))
+  )
+
+# Create a visualization
+ggplot(plot_data, aes(x = feedback_source, y = score, fill = feedback_source)) +
+  geom_boxplot() +
+  facet_grid(dimension ~ time_point + TT_result) +
+  theme_minimal() +
+  labs(
+    x = "Feedback Source",
+    y = "Rating Score",
+    fill = "Feedback Source",
+    title = "Perception Ratings by Dimension, Time Point, and Turing Test Result"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.border = element_rect(fill = NA, color = "gray80"),
+    strip.text = element_text(size = 8)
+  ) +
+  scale_fill_brewer(palette = "Set2")
+```
+
+
+
+
+

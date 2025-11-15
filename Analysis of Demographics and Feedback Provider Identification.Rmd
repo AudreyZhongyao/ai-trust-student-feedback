@@ -1,0 +1,102 @@
+---
+title: "Analysis of Demographics and Feedback Provider Identification"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Load Required Libraries
+```{r}
+library(tidyverse)
+library(broom)
+library(stargazer)
+```
+
+## Data Import and Preparation
+```{r}
+# Read the data
+data <- read_csv("results_processed_26Feb25.csv")
+
+# Convert gender to factor
+data$P4_student_gender <- as.factor(data$P4_student_gender)
+
+# Convert course section to factor
+data$P4_student_section <- as.factor(data$P4_student_section)
+```
+
+## Descriptive Statistics
+```{r}
+# Summary statistics for demographics
+summary_stats <- data %>%
+  summarise(
+    mean_age = mean(P4_student_age, na.rm = TRUE),
+    sd_age = sd(P4_student_age, na.rm = TRUE),
+    gender_distribution = table(P4_student_gender),
+    course_distribution = table(course_id)
+  )
+
+print(summary_stats)
+
+# Success rates by demographic groups
+data %>%
+  group_by(P4_student_gender) %>%
+  summarise(
+    ai_success_rate = mean(P2_feedback_correct, na.rm = TRUE),
+    coprod_success_rate = mean(P2_feedback_co_correct, na.rm = TRUE)
+  )
+
+data %>%
+  group_by(course_id) %>%
+  summarise(
+    ai_success_rate = mean(P2_feedback_correct, na.rm = TRUE),
+    coprod_success_rate = mean(P2_feedback_co_correct, na.rm = TRUE)
+  )
+```
+
+## Logistic Regression Models
+
+### Model 1: Predicting Correct AI Feedback Identification
+```{r}
+model_ai <- glm(P2_feedback_correct ~ 
+                P4_student_age + 
+                P4_student_gender + 
+                course_id,
+              family = binomial(link = "logit"),
+              data = data)
+
+# Model summary
+summary(model_ai)
+
+# Get odds ratios and confidence intervals
+ai_odds_ratios <- exp(cbind(OR = coef(model_ai), 
+                           confint(model_ai))) %>%
+                 as.data.frame()
+
+print("Odds Ratios for AI Feedback Identification:")
+print(ai_odds_ratios)
+```
+
+### Model 2: Predicting Correct Co-Production Identification
+```{r}
+model_coprod <- glm(P2_feedback_co_correct ~ 
+                    P4_student_age + 
+                    P4_student_gender + 
+                    course_id,
+                  family = binomial(link = "logit"),
+                  data = data)
+
+# Model summary
+summary(model_coprod)
+
+# Get odds ratios and confidence intervals
+coprod_odds_ratios <- exp(cbind(OR = coef(model_coprod), 
+                               confint(model_coprod))) %>%
+                     as.data.frame()
+
+print("Odds Ratios for Co-Production Identification:")
+print(coprod_odds_ratios)
+```
+# Based on the logistic regression results for both models (AI feedback and co-production identification), none of the demographic variables (age, gender, or course) showed statistically significant correlations with students' ability to correctly identify feedback providers, though there was a marginal trend (p = 0.057) suggesting male students might be less successful at identifying co-produced feedback.
